@@ -46,6 +46,39 @@ def merge_player(stats, new_entry):
     stats.append(new_entry)
 
 # -----------------------------
+# Export Helpers
+# -----------------------------
+
+def generate_export_filename(stats):
+    names = [p["Player"].replace(" ", "_") for p in stats]
+    name_part = "_".join(names)
+    rand = random.randint(1, 1_000_000)
+    date = datetime.now().strftime("%m-%d-%y")
+    return f"{name_part}_stats_{rand}_{date}.txt"
+
+def build_export_text(stats):
+    lines = []
+    lines.append("Baseball Stats Log\n")
+
+    for p in stats:
+        lines.append(f"Player: {p['Player']}")
+        lines.append(f"At Bats: {p['At Bats']}")
+        lines.append(f"Singles: {p['Singles']}")
+        lines.append(f"Doubles: {p['Doubles']}")
+        lines.append(f"Triples: {p['Triples']}")
+        lines.append(f"Home Runs: {p['Home Runs']}")
+        lines.append(f"Stolen Bases: {p['Stolen Bases']}")
+        avg = calculate_batting_average(
+            p["Singles"], p["Doubles"], p["Triples"], p["Home Runs"], p["At Bats"]
+        )
+        lines.append(f"Batting Avg: {format_batting_average(avg)}\n")
+
+    lines.append("Summary Table (Sorted by Batting Avg):\n")
+    lines.append(format_summary_table(stats))
+
+    return "\n".join(lines)
+
+# -----------------------------
 # Streamlit App
 # -----------------------------
 
@@ -145,3 +178,16 @@ with tab2:
 
         st.subheader("📋 Updated Summary")
         st.code(format_summary_table(st.session_state.stats))
+
+        # -----------------------------
+        # Export Button
+        # -----------------------------
+        export_text = build_export_text(st.session_state.stats)
+        filename = generate_export_filename(st.session_state.stats)
+
+        st.download_button(
+            label="📥 Download Summary File",
+            data=export_text,
+            file_name=filename,
+            mime="text/plain"
+        )
