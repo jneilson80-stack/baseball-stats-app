@@ -5,6 +5,33 @@ import random
 from datetime import datetime
 import csv
 import io
+import json  # For season save/load
+
+# ----------------------------------------
+# Safe rerun + season restore block
+# ----------------------------------------
+
+# Safe rerun flag
+if "needs_rerun" not in st.session_state:
+    st.session_state.needs_rerun = False
+
+# Trigger safe rerun BEFORE rendering anything else
+if st.session_state.needs_rerun:
+    st.session_state.needs_rerun = False
+    st.rerun()
+
+# Restore session state from season file BEFORE any widgets render
+if "loaded_season_data" in st.session_state:
+    loaded = st.session_state.pop("loaded_season_data")
+    st.session_state.update({
+        "stats": loaded["stats"],
+        "lineup": loaded["lineup"],
+        "lineup_select": loaded["lineup"],
+        "current_batter_index": loaded["current_batter_index"],
+        "auto_advance": loaded["auto_advance"],
+        "last_play": loaded["last_play"],
+        "fast_mode": loaded["fast_mode"],
+    })
 
 # ----------------------------------------
 # Default selectable players (always shown)
@@ -356,10 +383,10 @@ def undo_last_play():
     st.success(f"Undid last play for {lp['player_name']}.")
 
 # ----------------------------------------
-# Streamlit App
+# Streamlit App core state
 # ----------------------------------------
 
-st.title("⚾ Unified Baseball Stats & Game Mode")
+st.title("⚾ Unified Baseball Stats & Fast Tap")
 
 if "stats" not in st.session_state:
     st.session_state.stats = []
@@ -388,20 +415,23 @@ if "add_merge_selector" not in st.session_state:
 if "add_new_name_input" not in st.session_state:
     st.session_state.add_new_name_input = ""
 
-# Tabs
+# ----------------------------------------
+# Tabs (Enhanced U3 Labels)
+# ----------------------------------------
+
 tab_lineup, tab_add_merge, tab_game, tab_export, tab_faq = st.tabs([
-    "📝 Set Lineup",
+    "🧾 Lineup Setup",
     "➕ Add / Merge Players",
-    "⚡ Game Mode (Fast Tap)",
+    "⚡ Fast Tap Game Mode",
     "📤 Export Summary File",
     "❓ FAQ / Formulas"
 ])
 
 # ----------------------------------------
-# TAB 1 — Set Lineup
+# TAB 1 — Lineup Setup
 # ----------------------------------------
 with tab_lineup:
-    st.header("Set Lineup")
+    st.header("🧾 Lineup Setup")
 
     added_players = [p["Player"] for p in st.session_state.stats]
     all_players = sorted(set(DEFAULT_PLAYERS + added_players))
@@ -412,70 +442,109 @@ with tab_lineup:
         if st.button("💾 Save Lineup"):
             st.session_state.lineup = st.session_state.lineup_select
             st.session_state.current_batter_index = 0
-            st.success("Lineup saved.")
+            st.success("Lineup saved successfully.")
 
     with col2:
-        st.session_state.lineup_select = st.multiselect(
+        st.multiselect(
             "Select players for the lineup (alphabetical):",
             options=all_players,
-            default=st.session_state.lineup
+            key="lineup_select"
         )
 
 # ----------------------------------------
 # TAB 2 — Add / Merge Players
 # ----------------------------------------
 with tab_add_merge:
-    st.header("Add or Update Player Stats")
+    st.header("➕ Add or Merge Player Stats")
 
+    # Build combined name list
     lineup_names = st.session_state.lineup
     existing_names = [p["Player"] for p in st.session_state.stats]
     combined_names = sorted(set(lineup_names + existing_names))
 
-    name_options = [
-        "Reset selection (use new name field)"
-    ] + combined_names
+    name_options = ["Reset selection (use new name field)"] + combined_names
 
+    # Track last selected player for stat reset
+    if "last_selected_player" not in st.session_state:
+        st.session_state.last_selected_player = "Reset selection (use new name field)"
+
+    # Autoclear new name field when selecting an existing player
     last_selected = st.session_state.add_merge_selector
-
     if last_selected != "Reset selection (use new name field)":
         st.session_state.add_new_name_input = ""
 
+    # New name text input
     new_name_input = st.text_input(
         "New player name (if adding someone new):",
         key="add_new_name_input"
     )
 
+    # Dropdown for existing players
     selected_option = st.selectbox(
         "Choose an existing player or reset:",
         options=name_options,
         key="add_merge_selector"
     )
 
+    # -------------------------
+    # RESET STATS WHEN PLAYER CHANGES
+    # -------------------------
+    if selected_option != st.session_state.last_selected_player:
+        # Reset all hitting + pitching stat widgets
+        reset_keys = [
+            "hit_ab", "hit_1b", "hit_2b", "hit_3b", "hit_hr",
+            "hit_sb", "hit_rbi", "hit_bb", "hit_k",
+            "pitch_outs_input", "pitch_er_input", "pitch_k_input",
+            "pitch_bb_input", "pitch_h_input"
+        ]
+        for k in reset_keys:
+            st.session_state[k] = 0
+
+        st.session_state.last_selected_player = selected_option
+
+    # Determine final player name
     if selected_option == "Reset selection (use new name field)":
         name = st.session_state.add_new_name_input.strip()
     else:
         name = selected_option.strip()
 
-    # Hitting inputs (labels kept descriptive for data entry)
-    ab = st.number_input("At Bats", min_value=0, step=1)
-    s = st.number_input("Singles", min_value=0, step=1)
-    d = st.number_input("Doubles", min_value=0, step=1)
-    t = st.number_input("Triples", min_value=0, step=1)
-    hr = st.number_input("Home Runs", min_value=0, step=1)
-    sb = st.number_input("Stolen Bases", min_value=0, step=1)
-    rbis = st.number_input("RBIs", min_value=0, step=1)
-    walks = st.number_input("Walks", min_value=0, step=1)
-    strikeouts = st.number_input("Strikeouts", min_value=0, step=1)
+    # -------------------------
+    # Hitting inputs
+    # -------------------------
+    st.subheader("Hitting Stats")
 
-    st.subheader("Pitching Stats (optional)")
+    ab = st.number_input("At Bats (AB)", min_value=0, step=1, key="hit_ab")
+    s = st.number_input("Singles (1B)", min_value=0, step=1, key="hit_1b")
+    d = st.number_input("Doubles (2B)", min_value=0, step=1, key="hit_2b")
+    t = st.number_input("Triples (3B)", min_value=0, step=1, key="hit_3b")
+    hr = st.number_input("Home Runs (HR)", min_value=0, step=1, key="hit_hr")
+    sb = st.number_input("Stolen Bases (SB)", min_value=0, step=1, key="hit_sb")
+    rbis = st.number_input("Runs Batted In (RBI)", min_value=0, step=1, key="hit_rbi")
+    walks = st.number_input("Walks (BB)", min_value=0, step=1, key="hit_bb")
+    strikeouts = st.number_input("Strikeouts (K)", min_value=0, step=1, key="hit_k")
 
-    pitch_outs = st.number_input("Pitching Outs", min_value=0, step=1)
-    pitch_er = st.number_input("Earned Runs (Pitching)", min_value=0, step=1)
-    pitch_k = st.number_input("Strikeouts (Pitching)", min_value=0, step=1)
-    pitch_bb = st.number_input("Walks (Pitching)", min_value=0, step=1)
-    pitch_h = st.number_input("Hits Allowed (Pitching)", min_value=0, step=1)
+    # -------------------------
+    # Pitching inputs
+    # -------------------------
+    st.subheader("Pitching Stats")
 
-    if st.button("Add / Merge Player Stats"):
+    pitch_outs = st.number_input("Pitching Outs", min_value=0, step=1, key="pitch_outs_input")
+    pitch_er = st.number_input("Earned Runs (ER)", min_value=0, step=1, key="pitch_er_input")
+    pitch_k = st.number_input("Strikeouts (K)", min_value=0, step=1, key="pitch_k_input")
+    pitch_bb = st.number_input("Walks (BB)", min_value=0, step=1, key="pitch_bb_input")
+    pitch_h = st.number_input("Hits Allowed (H)", min_value=0, step=1, key="pitch_h_input")
+
+    # -------------------------
+    # Add / Merge Button
+    # -------------------------
+    if st.button("➕ Add / Merge Player Stats"):
+        # Strict validation for new names typed in the text box
+        if selected_option == "Reset selection (use new name field)":
+            raw_new_name = new_name_input
+            if raw_new_name != raw_new_name.strip():
+                st.error("Please enter first name only (no trailing spaces).")
+                st.stop()
+
         if not name:
             st.error("Please select a player or enter a new player name.")
         else:
@@ -514,12 +583,15 @@ with tab_add_merge:
                     st.session_state.lineup = sorted(st.session_state.lineup)
 
                 if result == "added":
-                    st.success(f"Added stats for {name}")
+                    st.success(f"Added stats for {name}.")
                 else:
-                    st.success(f"Merged stats for {name}")
+                    st.success(f"Merged stats for {name}.")
 
+    # -------------------------
+    # Display current stats
+    # -------------------------
     if st.session_state.stats:
-        st.subheader("Current Stats")
+        st.subheader("📊 Current Player Stats")
         display = []
         for p in st.session_state.stats:
             ensure_player_fields(p)
@@ -568,29 +640,30 @@ with tab_add_merge:
                 "ERA": format_rate(era),
                 "WHIP": format_rate(whip),
             })
+
         st.table(display)
 
 # ----------------------------------------
-# TAB 3 — Game Mode (Fast Tap)
+# TAB 3 — Fast Tap Game Mode
 # ----------------------------------------
 with tab_game:
-    st.header("Game Mode (Fast Tap)")
+    st.header("⚡ Fast Tap Game Mode")
 
     if not st.session_state.lineup:
-        st.warning("No lineup set. Go to Set Lineup tab.")
+        st.warning("No lineup set. Go to the Lineup Setup tab first.")
     else:
         col_mode1, col_mode2 = st.columns(2)
         with col_mode1:
-            if st.button("Hitting Mode"):
+            if st.button("🎯 Hitting Mode"):
                 st.session_state.fast_mode = "Hitting"
         with col_mode2:
-            if st.button("Pitching Mode"):
+            if st.button("🔥 Pitching Mode"):
                 st.session_state.fast_mode = "Pitching"
 
         st.write(f"Current Mode: **{st.session_state.fast_mode}**")
 
         st.session_state.auto_advance = st.checkbox(
-            "Auto-advance to next batter (hitting only)",
+            "Auto‑advance to next batter (hitting only)",
             value=st.session_state.auto_advance
         )
 
@@ -610,13 +683,17 @@ with tab_game:
 
         mode = "hitting" if st.session_state.fast_mode == "Hitting" else "pitching"
 
+        # -------------------------
+        # HITTING MODE BUTTONS
+        # -------------------------
         if mode == "hitting":
             col1, col2, col3 = st.columns(3)
+
             with col1:
-                if st.button("Single"):
+                if st.button("1B Single"):
                     record_fast_tap_play(current_batter, "Single", mode="hitting")
                     st.rerun()
-                if st.button("Home Run"):
+                if st.button("HR Home Run"):
                     record_fast_tap_play(current_batter, "Home Run", mode="hitting")
                     st.rerun()
                 if st.button("RBI"):
@@ -624,60 +701,72 @@ with tab_game:
                     st.rerun()
 
             with col2:
-                if st.button("Double"):
+                if st.button("2B Double"):
                     record_fast_tap_play(current_batter, "Double", mode="hitting")
                     st.rerun()
-                if st.button("Walk"):
+                if st.button("BB Walk"):
                     record_fast_tap_play(current_batter, "Walk", mode="hitting")
                     st.rerun()
-                if st.button("Stolen Base"):
+                if st.button("SB Stolen Base"):
                     record_fast_tap_play(current_batter, "Stolen Base", mode="hitting")
                     st.rerun()
 
             with col3:
-                if st.button("Triple"):
+                if st.button("3B Triple"):
                     record_fast_tap_play(current_batter, "Triple", mode="hitting")
                     st.rerun()
-                if st.button("Strikeout"):
+                if st.button("K Strikeout"):
                     record_fast_tap_play(current_batter, "Strikeout", mode="hitting")
                     st.rerun()
                 if st.button("Out"):
                     record_fast_tap_play(current_batter, "Out", mode="hitting")
                     st.rerun()
 
-        else:  # pitching mode
+        # -------------------------
+        # PITCHING MODE BUTTONS
+        # -------------------------
+        else:
             col1, col2, col3 = st.columns(3)
+
             with col1:
-                if st.button("Pitch Strikeout"):
+                if st.button("K Strikeout (Pitching)"):
                     record_fast_tap_play(current_batter, "Pitch Strikeout", mode="pitching")
                     st.rerun()
-                if st.button("Pitch Walk"):
+                if st.button("BB Walk (Pitching)"):
                     record_fast_tap_play(current_batter, "Pitch Walk", mode="pitching")
                     st.rerun()
+
             with col2:
-                if st.button("Pitch Hit Allowed"):
+                if st.button("Hit Allowed"):
                     record_fast_tap_play(current_batter, "Pitch Hit Allowed", mode="pitching")
                     st.rerun()
-                if st.button("Pitch Earned Run"):
+                if st.button("Earned Run"):
                     record_fast_tap_play(current_batter, "Pitch Earned Run", mode="pitching")
                     st.rerun()
+
             with col3:
-                if st.button("Pitch Out"):
+                if st.button("Out Recorded"):
                     record_fast_tap_play(current_batter, "Pitch Out", mode="pitching")
                     st.rerun()
-                if st.button("Pitch Inning Complete"):
+                if st.button("Inning Complete"):
                     record_fast_tap_play(current_batter, "Pitch Inning Complete", mode="pitching")
                     st.rerun()
 
-        if st.button("Undo Last Play"):
+        # Undo Last Play
+        if st.button("↩️ Undo Last Play"):
             undo_last_play()
             st.rerun()
 
+        # -------------------------
+        # LIVE SUMMARY TABLE
+        # -------------------------
         if st.session_state.stats:
-            st.subheader("Live Summary")
+            st.subheader("📊 Live Summary")
+
             display = []
             for p in st.session_state.stats:
                 ensure_player_fields(p)
+
                 s_val = p["Singles"]
                 d_val = p["Doubles"]
                 t_val = p["Triples"]
@@ -723,24 +812,26 @@ with tab_game:
                     "ERA": format_rate(era),
                     "WHIP": format_rate(whip),
                 })
+
             st.table(display)
 
 # ----------------------------------------
-# TAB 4 — Export Summary File (TXT + CSV)
+# TAB 4 — Export Summary File (TXT + CSV + Season)
 # ----------------------------------------
 with tab_export:
-    st.header("Export Summary File")
+    st.header("📤 Export Summary & Season Save/Load")
 
-    if not st.session_state.stats:
-        st.warning("No stats available to export.")
-    else:
+    # -------------------------
+    # EXPORTS (only if stats exist)
+    # -------------------------
+    if st.session_state.stats:
         # TXT Export
         export_text = build_export_text(st.session_state.stats)
         filename_txt = generate_export_filename(st.session_state.stats)
 
-        st.subheader("Download TXT Summary")
+        st.subheader("📄 Download TXT Summary")
         st.download_button(
-            label="Download TXT File",
+            label="⬇️ Download TXT File",
             data=export_text,
             file_name=filename_txt,
             mime="text/plain"
@@ -751,10 +842,8 @@ with tab_export:
         writer = csv.writer(csv_buffer)
 
         writer.writerow([
-            # Hitting (MLB abbreviations)
             "Player", "AB", "1B", "2B", "3B", "HR",
             "SB", "RBI", "BB", "K", "AVG", "OBP", "SLG", "OPS",
-            # Pitching
             "IP", "ER", "K (P)", "BB (P)", "H (P)", "ERA", "WHIP"
         ])
 
@@ -809,33 +898,144 @@ with tab_export:
         csv_data = csv_buffer.getvalue()
         filename_csv = filename_txt.replace(".txt", ".csv")
 
-        st.subheader("Download CSV Summary")
+        st.subheader("📊 Download CSV Summary")
         st.download_button(
-            label="Download CSV File",
+            label="⬇️ Download CSV File",
             data=csv_data,
             file_name=filename_csv,
             mime="text/csv"
         )
 
+        # -------------------------
+        # SEASON SAVE
+        # -------------------------
+        st.subheader("💾 Season Save")
+
+        season_data = {
+            "stats": st.session_state.stats,
+            "lineup": st.session_state.lineup,
+            "current_batter_index": st.session_state.current_batter_index,
+            "auto_advance": st.session_state.auto_advance,
+            "last_play": st.session_state.last_play,
+            "fast_mode": st.session_state.fast_mode,
+        }
+
+        season_json = json.dumps(season_data, indent=4)
+        season_filename = f"season_save_{random.randint(1, 1_000_000)}_{datetime.now().strftime('%m-%d-%y')}.json"
+
+        st.download_button(
+            label="💾 Download Season JSON",
+            data=season_json,
+            file_name=season_filename,
+            mime="application/json"
+        )
+
+    else:
+        st.warning("No stats available to export yet. Play a game or add stats first.")
+
+    # -------------------------
+    # SEASON LOAD (always visible in this tab)
+    # -------------------------
+    st.subheader("📁 Season Load")
+
+    uploaded_season = st.file_uploader("📂 Load Season JSON", type=["json"])
+
+    if uploaded_season is not None:
+        try:
+            loaded = json.load(uploaded_season)
+            required_keys = [
+                "stats", "lineup", "current_batter_index",
+                "auto_advance", "last_play", "fast_mode"
+            ]
+
+            if not all(k in loaded for k in required_keys):
+                st.error("Invalid season file. Missing required fields.")
+            else:
+                # Store loaded data and trigger safe rerun
+                st.session_state.loaded_season_data = loaded
+                st.session_state.needs_rerun = True
+                st.success("Season loaded — restoring lineup and stats...")
+                st.stop()
+
+        except Exception as e:
+            st.error(f"Error loading season file: {e}")
+
 # ----------------------------------------
 # TAB 5 — FAQ / Formulas
 # ----------------------------------------
 with tab_faq:
-    st.header("FAQ / Formulas")
+    st.header("❓ FAQ / Formulas")
 
-    st.subheader("Hitting Formulas")
+    # -------------------------
+    # Season Save / Load
+    # -------------------------
+    st.subheader("💾 How to Save a Season")
     st.markdown(
-        "- **AVG** = Hits ÷ AB\n"
-        "- **Hits** = 1B + 2B + 3B + HR\n"
-        "- **OBP** = (Hits + BB) ÷ (AB + BB)\n"
-        "- **SLG** = Total Bases ÷ AB\n"
-        "- **Total Bases** = 1B + (2 × 2B) + (3 × 3B) + (4 × HR)\n"
-        "- **OPS** = OBP + SLG\n"
+        "1. Go to the **📤 Export Summary File** tab.\n"
+        "2. Under **💾 Season Save**, tap **Download Season JSON**.\n"
+        "3. This JSON file contains your entire season state:\n"
+        "   - All player stats (hitting + pitching)\n"
+        "   - Lineup order\n"
+        "   - Current batter index\n"
+        "   - Fast Tap mode (Hitting/Pitching)\n"
+        "   - Auto‑advance setting\n"
+        "   - Last play info for undo logic\n"
+        "4. Store the file somewhere safe (Downloads, cloud drive, etc.).\n"
+        "5. You can also download TXT/CSV summaries for your own records.\n"
     )
 
-    st.subheader("Pitching Formulas")
+    st.subheader("📁 How to Load a Saved Season")
     st.markdown(
-        "- **IP** = Outs ÷ 3\n"
-        "- **ERA** = (ER × 9) ÷ IP\n"
+        "1. Go to the **📤 Export Summary File** tab.\n"
+        "2. Under **📁 Season Load**, upload your saved JSON file.\n"
+        "3. If the file is valid, the app restores:\n"
+        "   - Player stats\n"
+        "   - Lineup (and lineup selection dropdown)\n"
+        "   - Current batter index\n"
+        "   - Fast Tap mode (Hitting / Pitching)\n"
+        "   - Auto‑advance setting\n"
+        "4. Go to **🧾 Lineup Setup** to confirm the lineup dropdown is already filled.\n"
+        "5. Go to **⚡ Fast Tap Game Mode** to continue scoring right where you left off.\n"
+    )
+
+    # -------------------------
+    # Fast Tap / Lineup Behavior
+    # -------------------------
+    st.subheader("⚡ Fast Tap & Lineup Behavior")
+    st.markdown(
+        "- In **Hitting Mode**, tapping a result (1B, 2B, HR, K, Out, etc.) updates the hitter's stats.\n"
+        "- If **Auto‑advance** is checked, the current batter automatically moves to the next player in the lineup.\n"
+        "- In **Pitching Mode**, buttons track the pitcher's stats (K, BB, H, ER, Outs, Inning Complete).\n"
+        "- The **Undo Last Play** button rolls back the most recent Fast Tap action for the selected player.\n"
+    )
+
+    # -------------------------
+    # Hitting Formulas
+    # -------------------------
+    st.subheader("⚾ Hitting Formulas (MLB‑style)")
+    st.markdown(
+        "- **Hits** = 1B + 2B + 3B + HR\n"
+        "- **AVG (Batting Average)** = Hits ÷ AB\n"
+        "- **OBP (On‑Base Percentage)** = (Hits + BB) ÷ (AB + BB)\n"
+        "- **Total Bases** = (1 × 1B) + (2 × 2B) + (3 × 3B) + (4 × HR)\n"
+        "- **SLG (Slugging Percentage)** = Total Bases ÷ AB\n"
+        "- **OPS** = OBP + SLG\n"
+        "\n"
+        "All rate stats are displayed in familiar three‑digit formats like `.300`, `.425`, etc.\n"
+    )
+
+    # -------------------------
+    # Pitching Formulas
+    # -------------------------
+    st.subheader("⚾ Pitching Formulas")
+    st.markdown(
+        "- **IP (Innings Pitched)** = Outs ÷ 3\n"
+        "- **ERA (Earned Run Average)** = (ER × 9) ÷ IP\n"
         "- **WHIP** = (BB + H) ÷ IP\n"
+        "\n"
+        "Pitching totals use pitching‑only fields:\n"
+        "- **ER** = Earned Runs allowed as a pitcher\n"
+        "- **K (P)** = Strikeouts as a pitcher\n"
+        "- **BB (P)** = Walks issued as a pitcher\n"
+        "- **H (P)** = Hits allowed as a pitcher\n"
     )
